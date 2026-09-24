@@ -59,6 +59,9 @@ def cmd_enhance(args: argparse.Namespace) -> int:
         saturation=args.saturation,
         sharpen=args.sharpen,
         face_restore=args.face_restore,
+        scratch_removal=args.scratch_removal,
+        colorize=args.colorize,
+        colorize_model=args.colorize_model,
         tile=args.tile,
         device=args.device,
     )
@@ -67,8 +70,10 @@ def cmd_enhance(args: argparse.Namespace) -> int:
     except ValueError as e:
         raise SystemExit(f"error: {e}") from None
 
-    if opts.face_restore > 0 and not torch_available():
-        raise SystemExit("error: face restoration needs PyTorch: pip install 'photo-enhancer[ai]'")
+    if opts.needs_torch() and not torch_available():
+        raise SystemExit(
+            f"error: {', '.join(opts.needs_torch())} needs PyTorch: pip install 'photo-enhancer[ai]'"
+        )
     if resolve_model(opts.model) != opts.model:
         print(
             "warning: PyTorch not installed; using the classic (non-AI) upscaler.\n"
@@ -103,6 +108,10 @@ def cmd_models(args: argparse.Namespace) -> int:
     for m in models.FACE_MODELS.values():
         mark = "downloaded" if models.is_downloaded(m.key) else "not downloaded"
         print(f"  {m.key:<15} {m.name} [{mark}]\n  {'':<15} {m.description}")
+    print("\nOld photos (--scratch-removal, --colorize):")
+    for m in models.OLD_PHOTO_MODELS.values():
+        mark = "downloaded" if models.is_downloaded(m.key) else "not downloaded"
+        print(f"  {m.key:<16} {m.name} [{mark}]\n  {'':<16} {m.description}")
     return 0
 
 
@@ -111,13 +120,16 @@ def cmd_download(args: argparse.Namespace) -> int:
         keys = list(models.get_all_models())
     else:
         keys = args.models or [models.DEFAULT_MODEL]
-        if "faces" in keys:
-            keys = [k for k in keys if k != "faces"] + list(models.FACE_MODELS)
-    for key in keys:
-        try:
-            info = models.get_model_info(key)
-        except ValueError as e:
-            raise SystemExit(f"error: {e}") from None
+        groups = {
+            "faces": list(models.FACE_MODELS),
+            "old-photo": ["scratch-detector", models.DEFAULT_COLORIZE_MODEL],
+        }
+        keys = [k for key in keys for k in groups.get(key, [key])]
+    try:
+        infos = [models.get_model_info(key) for key in keys]
+    except ValueError as e:
+        raise SystemExit(f"error: {e}") from None
+    for key, info in zip(keys, infos):
         if models.is_downloaded(key):
             print(f"{key}: already downloaded")
             continue
@@ -126,7 +138,10 @@ def cmd_download(args: argparse.Namespace) -> int:
             if total:
                 print(f"\r{key}: {done / total:4.0%} of {total / 1e6:.0f} MB", end="", file=sys.stderr)
 
-        models.ensure_model(key, progress)
+        try:
+            models.ensure_model(key, progress)
+        except (OSError, RuntimeError) as e:  # URLError is an OSError
+            raise SystemExit(f"\nerror: could not download {key} from {info.url}: {e}") from None
         print(f"\r{key}: saved to {models.model_path(key)} ({info.name})", file=sys.stderr)
     return 0
 
@@ -173,6 +188,26 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="0-1",
         help="restore faces with GFPGAN; the value blends restored and original faces (try 0.7)",
     )
+    e.add_argument(
+        "--scratch-removal",
+        type=float,
+        default=0.0,
+        metavar="0-1",
+        help="find and fill in scratches, creases and dust; the value is detection sensitivity (try 0.5)",
+    )
+    e.add_argument(
+        "--colorize",
+        type=float,
+        default=0.0,
+        metavar="0-1",
+        help="colorize black-and-white photos with DDColor; the value scales the added color (try 1)",
+    )
+    e.add_argument(
+        "--colorize-model",
+        default=models.DEFAULT_COLORIZE_MODEL,
+        choices=[k for k in models.OLD_PHOTO_MODELS if k.startswith("ddcolor")],
+        help=f"colorization model (default: {models.DEFAULT_COLORIZE_MODEL})",
+    )
     e.add_argument("--format", choices=["png", "jpg", "webp"], help="output format")
     e.add_argument("--quality", type=int, default=95, help="JPEG/WebP quality (default: 95)")
     e.add_argument("--tile", type=int, default=256, help="tile size; lower uses less memory, 0 disables")
@@ -188,7 +223,7 @@ def build_parser() -> argparse.ArgumentParser:
         "models",
         nargs="*",
         metavar="MODEL",
-        help=f"one of: {', '.join(models.get_all_models())}, or 'faces' for both face models",
+        help=f"one of: {', '.join(models.get_all_models())}, or a group: 'faces', 'old-photo'",
     )
     d.add_argument("--all", action="store_true", help="download every model")
     d.set_defaults(func=cmd_download)

@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ai = ["torch>=2.1", "spandrel>=0.4"]
+ai = ["torch>=2.1", "spandrel>=0.4", "spandrel_extra_arches>=0.2"]
 web = ["fastapi>=0.110", "uvicorn>=0.27", "python-multipart>=0.0.9"]
 all = ["photo-enhancer[ai,web]"]
 dev = ["photo-enhancer[all]", "pytest>=8", "httpx>=0.27"]

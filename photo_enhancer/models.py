@@ -3,15 +3,21 @@
 Weights are fetched once from their official release URLs, verified against a
 pinned SHA-256, and stored under the cache directory. After that, everything
 runs fully offline.
+
+Some weights only ship inside large archives. For those, just the one member
+is read out of the remote zip with HTTP range requests, so there's no need to
+download the whole archive.
 """
 
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import shutil
 import tempfile
 import urllib.request
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -23,12 +29,16 @@ class ModelInfo:
     name: str
     scale: int
     url: str
-    sha256: str
+    sha256: str | None  # of the downloaded file (or zip member)
     description: str
+    size: int | None = None  # checked when no SHA-256 is pinned
+    member: str | None = None  # path inside a zip at ``url``
+    keep: str | None = None  # keep only this entry of a torch checkpoint
+    file: str | None = None  # local filename, if not the URL's
 
     @property
     def filename(self) -> str:
-        return self.url.rsplit("/", 1)[-1]
+        return self.file or (self.member or self.url).rsplit("/", 1)[-1]
 
 
 MODELS: dict[str, ModelInfo] = {
@@ -96,6 +106,44 @@ FACE_MODELS: dict[str, ModelInfo] = {
 }
 
 
+# Old photo restoration: scratch detection and colorization.
+OLD_PHOTO_MODELS: dict[str, ModelInfo] = {
+    m.key: m
+    for m in [
+        ModelInfo(
+            key="scratch-detector",
+            name="Scratch detector (Bringing Old Photos Back to Life)",
+            scale=1,
+            url="https://github.com/microsoft/Bringing-Old-Photos-Back-to-Life/releases/download/v1.0/global_checkpoints.zip",
+            member="checkpoints/detection/FT_Epoch_latest.pt",
+            sha256="b2d7ab04e9b3885c6b1991bb7a0b823129dd6e3ac078a9fd059ebd2a7ba59a95",
+            keep="model_state",
+            file="scratch_detector.pth",
+            description="Finds scratches, creases and dust. Reads ~420 MB out of Microsoft's 2 GB archive; stores 150 MB.",
+        ),
+        ModelInfo(
+            key="ddcolor",
+            name="DDColor (ModelScope)",
+            scale=1,
+            url="https://huggingface.co/piddnad/DDColor-models/resolve/main/ddcolor_modelscope.pth",
+            sha256=None,
+            size=911950059,
+            description="Best colorization quality for photos. 912 MB.",
+        ),
+        ModelInfo(
+            key="ddcolor-tiny",
+            name="DDColor Tiny",
+            scale=1,
+            url="https://huggingface.co/piddnad/DDColor-models/resolve/main/ddcolor_paper_tiny.pth",
+            sha256=None,
+            size=220393145,
+            description="Smaller, faster colorization model. 220 MB.",
+        ),
+    ]
+}
+DEFAULT_COLORIZE_MODEL = "ddcolor"
+
+
 def cache_dir() -> Path:
     """Where model weights live. Override with PHOTO_ENHANCER_MODELS."""
     env = os.environ.get("PHOTO_ENHANCER_MODELS")
@@ -114,11 +162,11 @@ def is_downloaded(key: str) -> bool:
 
 
 def get_all_models() -> dict[str, ModelInfo]:
-    return {**MODELS, **FACE_MODELS}
+    return {**MODELS, **FACE_MODELS, **OLD_PHOTO_MODELS}
 
 
 def get_model_info(key: str) -> ModelInfo:
-    info = MODELS.get(key) or FACE_MODELS.get(key)
+    info = get_all_models().get(key)
     if info is None:
         raise ValueError(f"Unknown model {key!r}. Choose from: {', '.join(get_all_models())}")
     return info
@@ -130,6 +178,73 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+class _HTTPRangeFile(io.RawIOBase):
+    """A read-only, seekable view of a remote file, fetched with Range requests."""
+
+    def __init__(self, url: str):
+        with urllib.request.urlopen(urllib.request.Request(url, method="HEAD")) as resp:
+            self.url = resp.url  # follow redirects once (e.g. to a signed CDN URL)
+            self.size = int(resp.headers["Content-Length"])
+        self.pos = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def tell(self) -> int:
+        return self.pos
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        base = {io.SEEK_SET: 0, io.SEEK_CUR: self.pos, io.SEEK_END: self.size}[whence]
+        self.pos = base + offset
+        return self.pos
+
+    def readinto(self, buf) -> int:
+        if self.pos >= self.size:
+            return 0
+        end = min(self.pos + len(buf), self.size) - 1
+        req = urllib.request.Request(self.url, headers={"Range": f"bytes={self.pos}-{end}"})
+        with urllib.request.urlopen(req) as resp:
+            data = resp.read()
+        buf[: len(data)] = data
+        self.pos += len(data)
+        return len(data)
+
+
+def _copy(src, out, total: int, progress: Callable[[int, int], None] | None) -> None:
+    done = 0
+    while chunk := src.read(1 << 20):
+        out.write(chunk)
+        done += len(chunk)
+        if progress:
+            progress(done, total)
+
+
+def _fetch(info: ModelInfo, out, progress: Callable[[int, int], None] | None) -> None:
+    if info.member:
+        remote = io.BufferedReader(_HTTPRangeFile(info.url), buffer_size=4 << 20)
+        with zipfile.ZipFile(remote) as zf, zf.open(info.member) as src:
+            _copy(src, out, zf.getinfo(info.member).file_size, progress)
+    else:
+        with urllib.request.urlopen(info.url) as resp:
+            _copy(resp, out, int(resp.headers.get("Content-Length") or 0), progress)
+
+
+def _verify(info: ModelInfo, path: Path) -> None:
+    if info.sha256:
+        digest = _sha256(path)
+        if digest != info.sha256:
+            raise RuntimeError(
+                f"Checksum mismatch for {info.filename}: expected {info.sha256}, got {digest}"
+            )
+    elif info.size is not None and path.stat().st_size != info.size:
+        raise RuntimeError(
+            f"Size mismatch for {info.filename}: expected {info.size} bytes, got {path.stat().st_size}"
+        )
 
 
 def ensure_model(
@@ -146,19 +261,16 @@ def ensure_model(
     fd, tmp_name = tempfile.mkstemp(dir=dest.parent, suffix=".part")
     tmp = Path(tmp_name)
     try:
-        with urllib.request.urlopen(info.url) as resp, os.fdopen(fd, "wb") as out:
-            total = int(resp.headers.get("Content-Length") or 0)
-            done = 0
-            while chunk := resp.read(1 << 20):
-                out.write(chunk)
-                done += len(chunk)
-                if progress:
-                    progress(done, total)
-        digest = _sha256(tmp)
-        if digest != info.sha256:
-            raise RuntimeError(
-                f"Checksum mismatch for {info.filename}: expected {info.sha256}, got {digest}"
-            )
+        with os.fdopen(fd, "wb") as out:
+            _fetch(info, out, progress)
+        _verify(info, tmp)
+        if info.keep:
+            # Drop training state (optimizer etc.) to save disk space. The
+            # weights-only loader refuses anything but plain tensors and containers.
+            import torch
+
+            state = torch.load(tmp, map_location="cpu", weights_only=True)[info.keep]
+            torch.save(state, tmp)
         shutil.move(tmp, dest)
     finally:
         tmp.unlink(missing_ok=True)

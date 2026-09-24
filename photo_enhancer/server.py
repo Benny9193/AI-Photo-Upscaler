@@ -74,6 +74,10 @@ def _run_job(job: Job, data: bytes, opts: EnhanceOptions, fmt: str) -> None:
         needed = [resolve_model(opts.model)]
         if opts.face_restore > 0:
             needed += list(models.FACE_MODELS)
+        if opts.scratch_removal > 0:
+            needed.append("scratch-detector")
+        if opts.colorize > 0:
+            needed.append(opts.colorize_model)
         missing = [k for k in needed if k in models.get_all_models() and not models.is_downloaded(k)]
         for i, key in enumerate(missing):
             job.stage = f"Downloading {models.get_model_info(key).name} (first run only)"
@@ -131,6 +135,10 @@ def info() -> dict:
         "default_model": models.DEFAULT_MODEL if torch_available() else "classic",
         "faces_downloaded": all(models.is_downloaded(k) for k in models.FACE_MODELS),
         "faces_size_mb": 350,
+        "old_photo_models": {
+            m.key: {"name": m.name, "downloaded": models.is_downloaded(m.key), "description": m.description}
+            for m in models.OLD_PHOTO_MODELS.values()
+        },
         "models": [
             {
                 "key": m.key,
@@ -155,6 +163,9 @@ async def create_job(
     saturation: float = Form(0.0),
     sharpen: float = Form(0.0),
     face_restore: float = Form(0.0),
+    scratch_removal: float = Form(0.0),
+    colorize: float = Form(0.0),
+    colorize_model: str = Form(models.DEFAULT_COLORIZE_MODEL),
     format: str = Form("png"),
 ) -> dict:
     opts = EnhanceOptions(
@@ -166,6 +177,9 @@ async def create_job(
         saturation=saturation,
         sharpen=sharpen,
         face_restore=face_restore,
+        scratch_removal=scratch_removal,
+        colorize=colorize,
+        colorize_model=colorize_model,
     )
     try:
         opts.validate()

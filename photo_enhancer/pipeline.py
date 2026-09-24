@@ -24,6 +24,9 @@ class EnhanceOptions:
     saturation: float = 0.0
     sharpen: float = 0.0
     face_restore: float = 0.0  # GFPGAN blend strength; 0 disables face restoration
+    scratch_removal: float = 0.0  # scratch/dust detection sensitivity; 0 disables it
+    colorize: float = 0.0  # DDColor color strength; 0 disables colorization
+    colorize_model: str = models.DEFAULT_COLORIZE_MODEL
     tile: int = 256
     device: str = "auto"
 
@@ -32,11 +35,21 @@ class EnhanceOptions:
             models.get_model_info(self.model)  # raises a helpful ValueError
         if not 0.25 <= self.scale <= 8:
             raise ValueError("scale must be between 0.25 and 8")
-        for name in ("denoise", "white_balance", "contrast", "sharpen", "face_restore"):
+        for name in (
+            "denoise", "white_balance", "contrast", "sharpen", "face_restore", "scratch_removal", "colorize"
+        ):
             if not 0 <= getattr(self, name) <= 1:
                 raise ValueError(f"{name} must be between 0 and 1")
         if not -1 <= self.saturation <= 1:
             raise ValueError("saturation must be between -1 and 1")
+        if not self.colorize_model.startswith("ddcolor") or self.colorize_model not in models.OLD_PHOTO_MODELS:
+            raise ValueError("colorize_model must be ddcolor or ddcolor-tiny")
+
+    def needs_torch(self) -> list[str]:
+        """Names of the enabled features that require PyTorch."""
+        features = {"face restoration": self.face_restore, "scratch removal": self.scratch_removal,
+                    "colorization": self.colorize}
+        return [name for name, value in features.items() if value > 0]
 
 
 def resolve_model(model: str) -> str:
@@ -75,14 +88,48 @@ def enhance_array(
 ) -> tuple[np.ndarray, np.ndarray | None]:
     """Enhance an HxWx3 uint8 RGB array. Returns (rgb, alpha)."""
     opts.validate()
-    if opts.face_restore > 0 and not torch_available():
-        raise RuntimeError("Face restoration needs PyTorch: pip install 'photo-enhancer[ai]'")
+    if opts.needs_torch() and not torch_available():
+        raise RuntimeError(
+            f"{', '.join(opts.needs_torch()).capitalize()} needs PyTorch: pip install 'photo-enhancer[ai]'"
+        )
     h, w = rgb.shape[:2]
     target = (max(1, round(w * opts.scale)), max(1, round(h * opts.scale)))
 
+    # Progress: repair steps get a fixed slice each, then upscaling, then faces.
+    done = 0.0
+    img = rgb
+
+    # Scratches go first: denoising would smear them into the surroundings.
+    if opts.scratch_removal > 0:
+        from .scratches import get_scratch_remover
+
+        img, _ = get_scratch_remover(opts.device).remove(img, opts.scratch_removal)
+        done += 0.1
+        if progress:
+            progress(round(done * 1000), 1000)
+
     # Noise and color casts are best fixed before the network amplifies them.
-    img = enhance.denoise(rgb, opts.denoise)
+    img = enhance.denoise(img, opts.denoise)
+
+    if opts.colorize > 0:
+        from .colorize import get_colorizer
+
+        img = get_colorizer(opts.colorize_model, opts.device).colorize(img, opts.colorize)
+        done += 0.1
+        if progress:
+            progress(round(done * 1000), 1000)
+
     img = enhance.white_balance(img, opts.white_balance)
+
+    # GFPGAN paints skin tones even on black-and-white faces, so a monochrome
+    # photo gets its original tint put back after face restoration.
+    tone = None
+    if opts.face_restore > 0 and opts.colorize == 0:
+        from .colorize import tone_curve
+
+        table, spread = tone_curve(img)
+        if spread < 3.0:
+            tone = table
 
     # Faces are detected on the small image (faster), then restored on the
     # upscaled one so GFPGAN sees as much real detail as possible.
@@ -91,9 +138,10 @@ def enhance_array(
         from .faces import detect_faces
 
         faces = detect_faces(img)
-    # Upscaling takes the first 70% of the progress bar when faces follow.
+    # Faces take the last 30% of the progress bar, upscaling what's left.
     upscale_share = 0.7 if faces else 1.0
-    upscale_progress = _sub_progress(progress, 0, upscale_share)
+    upscale_end = done + (1 - done) * upscale_share
+    upscale_progress = _sub_progress(progress, done, upscale_end)
 
     model = resolve_model(opts.model)
     if model == "none":
@@ -116,12 +164,16 @@ def enhance_array(
             img,
             [f * ratio for f in faces],
             strength=opts.face_restore,
-            progress=_sub_progress(progress, upscale_share, 1.0),
+            progress=_sub_progress(progress, upscale_end, 1.0),
         )
 
     img = enhance.auto_contrast(img, opts.contrast)
     img = enhance.saturation(img, opts.saturation)
     img = enhance.sharpen(img, opts.sharpen)
+    if tone is not None:
+        from .colorize import apply_tone
+
+        img = apply_tone(img, tone)
 
     if alpha is not None:
         alpha = _resize(alpha, target)

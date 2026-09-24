@@ -107,6 +107,7 @@
       <button type="button" class="chip" data-preset="auto">Auto enhance</button>
       <button type="button" class="chip" data-preset="portrait">Portrait</button>
       <button type="button" class="chip" data-preset="old">Old photo</button>
+      <button type="button" class="chip" data-preset="colorize">Colorize B&amp;W</button>
       <button type="button" class="chip" data-preset="lowlight">Low light</button>
     </div>
 
@@ -127,6 +128,18 @@
     <h2>Faces</h2>
     <label class="field">Face restoration <span class="val"></span><input type="range" name="face_restore" id="face_restore" min="0" max="1" step="0.05" value="0"></label>
     <div class="model-desc" id="face-desc">Redraws blurry or damaged faces with GFPGAN. Lower values keep more of the original face.</div>
+
+    <h2>Old photos</h2>
+    <label class="field">Scratch &amp; dust removal <span class="val"></span><input type="range" name="scratch_removal" id="scratch_removal" min="0" max="1" step="0.05" value="0"></label>
+    <div class="model-desc" id="scratch-desc">Finds scratches, creases and dust spots and fills them in. Higher values catch fainter damage.</div>
+    <label class="field">Colorize <span class="val"></span><input type="range" name="colorize" id="colorize" min="0" max="1" step="0.05" value="0"></label>
+    <label class="field">Colorization model
+      <select name="colorize_model" id="colorize_model">
+        <option value="ddcolor">DDColor (best, 912 MB)</option>
+        <option value="ddcolor-tiny">DDColor Tiny (faster, 220 MB)</option>
+      </select>
+    </label>
+    <div class="model-desc" id="color-desc">Adds natural color to black-and-white and sepia photos. Lower values give a softer, hand-tinted look.</div>
 
     <h2>Adjustments</h2>
     <label class="field">Denoise <span class="val"></span><input type="range" name="denoise" min="0" max="1" step="0.05" value="0"></label>
@@ -175,11 +188,12 @@ const form = $("form"), fileInput = $("file"), drop = $("drop");
 let file = null, origSize = null, info = null, resultUrl = null, sourceUrl = null;
 
 const PRESETS = {
-  upscale:  { denoise: 0,    white_balance: 0,   contrast: 0,    saturation: 0,    sharpen: 0,    face_restore: 0 },
-  auto:     { denoise: 0.15, white_balance: 0.3, contrast: 0.35, saturation: 0.1,  sharpen: 0.15, face_restore: 0 },
-  portrait: { denoise: 0.1,  white_balance: 0.2, contrast: 0.2,  saturation: 0.05, sharpen: 0.05, face_restore: 0.7 },
-  old:      { denoise: 0.45, white_balance: 0.6, contrast: 0.5,  saturation: 0.15, sharpen: 0.2,  face_restore: 0.6 },
-  lowlight: { denoise: 0.6,  white_balance: 0.3, contrast: 0.7,  saturation: 0.05, sharpen: 0.1,  face_restore: 0 },
+  upscale:  { denoise: 0,    white_balance: 0,   contrast: 0,    saturation: 0,    sharpen: 0,    face_restore: 0,   scratch_removal: 0,   colorize: 0 },
+  auto:     { denoise: 0.15, white_balance: 0.3, contrast: 0.35, saturation: 0.1,  sharpen: 0.15, face_restore: 0,   scratch_removal: 0,   colorize: 0 },
+  portrait: { denoise: 0.1,  white_balance: 0.2, contrast: 0.2,  saturation: 0.05, sharpen: 0.05, face_restore: 0.7, scratch_removal: 0,   colorize: 0 },
+  old:      { denoise: 0.25, white_balance: 0.6, contrast: 0.4,  saturation: 0.15, sharpen: 0.2,  face_restore: 0.6, scratch_removal: 0.5, colorize: 0 },
+  colorize: { denoise: 0.3,  white_balance: 0,   contrast: 0.4,  saturation: 0,    sharpen: 0.15, face_restore: 0.6, scratch_removal: 0.5, colorize: 1 },
+  lowlight: { denoise: 0.6,  white_balance: 0.3, contrast: 0.7,  saturation: 0.05, sharpen: 0.1,  face_restore: 0,   scratch_removal: 0,   colorize: 0 },
 };
 
 function syncVals() {
@@ -212,14 +226,28 @@ async function loadInfo() {
   sel.add(new Option("Classic (no AI)", "classic", false, info.default_model === "classic"));
   if (!info.ai_available) {
     for (const o of sel.options) if (o.value !== "classic") o.disabled = true;
-    $("face_restore").disabled = true;
+    for (const id of ["face_restore", "scratch_removal", "colorize", "colorize_model"]) $(id).disabled = true;
     $("face-desc").textContent = "Face restoration needs PyTorch.";
+    $("scratch-desc").textContent = "Scratch removal needs PyTorch.";
+    $("color-desc").textContent = "Colorization needs PyTorch.";
     $("env").textContent = "Runs entirely on this computer · AI models need PyTorch: pip install 'photo-enhancer[ai]'";
   } else {
     $("env").textContent = `Runs entirely on this computer · ${info.device.toUpperCase()}`;
   }
   if (info.ai_available && !info.faces_downloaded) {
     $("face-desc").textContent += ` Downloads the models once (about ${info.faces_size_mb} MB) on first use.`;
+  }
+  if (info.ai_available && !info.old_photo_models["scratch-detector"].downloaded) {
+    $("scratch-desc").textContent += " Downloads the detector once (150 MB) on first use.";
+  }
+  const describeColor = () => {
+    const m = info.old_photo_models[$("colorize_model").value];
+    const base = "Adds natural color to black-and-white and sepia photos. Lower values give a softer, hand-tinted look.";
+    $("color-desc").textContent = info.ai_available && !m.downloaded ? `${base} Downloads the model once on first use.` : base;
+  };
+  if (info.ai_available) {
+    $("colorize_model").addEventListener("change", describeColor);
+    describeColor();
   }
   sel.addEventListener("change", describeModel);
   describeModel();
