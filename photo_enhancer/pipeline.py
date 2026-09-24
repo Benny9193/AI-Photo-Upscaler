@@ -23,6 +23,7 @@ class EnhanceOptions:
     contrast: float = 0.0
     saturation: float = 0.0
     sharpen: float = 0.0
+    face_restore: float = 0.0  # GFPGAN blend strength; 0 disables face restoration
     tile: int = 256
     device: str = "auto"
 
@@ -31,7 +32,7 @@ class EnhanceOptions:
             models.get_model_info(self.model)  # raises a helpful ValueError
         if not 0.25 <= self.scale <= 8:
             raise ValueError("scale must be between 0.25 and 8")
-        for name in ("denoise", "white_balance", "contrast", "sharpen"):
+        for name in ("denoise", "white_balance", "contrast", "sharpen", "face_restore"):
             if not 0 <= getattr(self, name) <= 1:
                 raise ValueError(f"{name} must be between 0 and 1")
         if not -1 <= self.saturation <= 1:
@@ -43,6 +44,18 @@ def resolve_model(model: str) -> str:
     if model in models.MODELS and not torch_available():
         return "classic"
     return model
+
+
+def _sub_progress(progress: ProgressFn | None, start: float, end: float) -> ProgressFn | None:
+    """Map a stage's (done, total) onto the [start, end] slice of overall progress."""
+    if progress is None:
+        return None
+
+    def report(done: int, total: int) -> None:
+        frac = start + (end - start) * (done / total if total else 1)
+        progress(round(frac * 1000), 1000)
+
+    return report
 
 
 def _resize(img: np.ndarray, size: tuple[int, int]) -> np.ndarray:
@@ -62,6 +75,8 @@ def enhance_array(
 ) -> tuple[np.ndarray, np.ndarray | None]:
     """Enhance an HxWx3 uint8 RGB array. Returns (rgb, alpha)."""
     opts.validate()
+    if opts.face_restore > 0 and not torch_available():
+        raise RuntimeError("Face restoration needs PyTorch: pip install 'photo-enhancer[ai]'")
     h, w = rgb.shape[:2]
     target = (max(1, round(w * opts.scale)), max(1, round(h * opts.scale)))
 
@@ -69,16 +84,40 @@ def enhance_array(
     img = enhance.denoise(rgb, opts.denoise)
     img = enhance.white_balance(img, opts.white_balance)
 
+    # Faces are detected on the small image (faster), then restored on the
+    # upscaled one so GFPGAN sees as much real detail as possible.
+    faces = []
+    if opts.face_restore > 0:
+        from .faces import detect_faces
+
+        faces = detect_faces(img)
+    # Upscaling takes the first 70% of the progress bar when faces follow.
+    upscale_share = 0.7 if faces else 1.0
+    upscale_progress = _sub_progress(progress, 0, upscale_share)
+
     model = resolve_model(opts.model)
     if model == "none":
         img = _resize(img, target)
+        if upscale_progress:
+            upscale_progress(1, 1)
     else:
         if model == "classic":
             upscaler = ClassicUpscaler(max(1, int(np.ceil(opts.scale))))
         else:
             upscaler = get_upscaler(model, opts.device)
-        img = upscaler.upscale(img, tile=opts.tile, progress=progress)
+        img = upscaler.upscale(img, tile=opts.tile, progress=upscale_progress)
         img = _resize(img, target)
+
+    if faces:
+        from .faces import get_restorer
+
+        ratio = np.array([target[0] / w, target[1] / h], dtype=np.float32)
+        img = get_restorer(opts.device).restore(
+            img,
+            [f * ratio for f in faces],
+            strength=opts.face_restore,
+            progress=_sub_progress(progress, upscale_share, 1.0),
+        )
 
     img = enhance.auto_contrast(img, opts.contrast)
     img = enhance.saturation(img, opts.saturation)

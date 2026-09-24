@@ -71,14 +71,17 @@ def _run_job(job: Job, data: bytes, opts: EnhanceOptions, fmt: str) -> None:
                 "choose a smaller scale or a smaller image."
             )
 
-        model = resolve_model(opts.model)
-        if model in models.MODELS and not models.is_downloaded(model):
-            job.stage = "Downloading model (first run only)"
+        needed = [resolve_model(opts.model)]
+        if opts.face_restore > 0:
+            needed += list(models.FACE_MODELS)
+        missing = [k for k in needed if k in models.get_all_models() and not models.is_downloaded(k)]
+        for i, key in enumerate(missing):
+            job.stage = f"Downloading {models.get_model_info(key).name} (first run only)"
 
-            def dl(done: int, total: int) -> None:
-                job.progress = done / total * 0.2 if total else 0
+            def dl(done: int, total: int, i: int = i) -> None:
+                job.progress = (i + (done / total if total else 0)) / len(missing) * 0.2
 
-            models.ensure_model(model, dl)
+            models.ensure_model(key, dl)
 
         job.stage = "Enhancing"
 
@@ -126,6 +129,8 @@ def info() -> dict:
         "ai_available": torch_available(),
         "device": device,
         "default_model": models.DEFAULT_MODEL if torch_available() else "classic",
+        "faces_downloaded": all(models.is_downloaded(k) for k in models.FACE_MODELS),
+        "faces_size_mb": 350,
         "models": [
             {
                 "key": m.key,
@@ -149,6 +154,7 @@ async def create_job(
     contrast: float = Form(0.0),
     saturation: float = Form(0.0),
     sharpen: float = Form(0.0),
+    face_restore: float = Form(0.0),
     format: str = Form("png"),
 ) -> dict:
     opts = EnhanceOptions(
@@ -159,6 +165,7 @@ async def create_job(
         contrast=contrast,
         saturation=saturation,
         sharpen=sharpen,
+        face_restore=face_restore,
     )
     try:
         opts.validate()
