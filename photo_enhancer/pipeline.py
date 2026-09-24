@@ -11,6 +11,7 @@ import numpy as np
 from PIL import Image, ImageOps
 
 from . import enhance, models
+from . import metadata as meta
 from .upscale import ClassicUpscaler, ProgressFn, get_upscaler, torch_available
 
 
@@ -181,11 +182,14 @@ def enhance_array(
 
 
 def load_image(data: bytes | str | Path) -> tuple[np.ndarray, np.ndarray | None, dict]:
-    """Decode an image into (rgb, alpha, save_info) honoring EXIF rotation."""
+    """Decode an image into (rgb, alpha, save_info) honoring EXIF rotation.
+
+    ``save_info`` carries the ICC profile, EXIF and XMP for ``encode_image``.
+    """
     src = io.BytesIO(data) if isinstance(data, bytes) else data
     with Image.open(src) as im:
         im = ImageOps.exif_transpose(im)
-        info = {"icc_profile": im.info.get("icc_profile")}
+        info = {"icc_profile": im.info.get("icc_profile"), **meta.read(im)}
         alpha = None
         if im.mode in ("RGBA", "LA", "PA") or (im.mode == "P" and "transparency" in im.info):
             im = im.convert("RGBA")
@@ -200,7 +204,9 @@ def encode_image(
     fmt: str = "PNG",
     quality: int = 95,
     info: dict | None = None,
+    metadata: str = "keep",
 ) -> bytes:
+    """Encode to PNG, JPEG or WebP. ``metadata`` is "keep", "no-gps" or "strip"."""
     fmt = fmt.upper().replace("JPG", "JPEG")
     im = Image.fromarray(rgb, "RGB")
     if alpha is not None and fmt in ("PNG", "WEBP"):
@@ -210,6 +216,7 @@ def encode_image(
         kwargs["icc_profile"] = info["icc_profile"]
     if fmt in ("JPEG", "WEBP"):
         kwargs["quality"] = quality
+    kwargs.update(meta.save_kwargs(info, fmt, im.size, metadata))
     buf = io.BytesIO()
     im.save(buf, format=fmt, **kwargs)
     return buf.getvalue()
@@ -221,6 +228,7 @@ def enhance_file(
     opts: EnhanceOptions,
     quality: int = 95,
     progress: ProgressFn | None = None,
+    metadata: str = "keep",
 ) -> tuple[int, int]:
     """Enhance ``src`` and write the result to ``dst``. Returns the output size."""
     rgb, alpha, info = load_image(Path(src))
@@ -228,5 +236,5 @@ def enhance_file(
     dst = Path(dst)
     fmt = Image.registered_extensions().get(dst.suffix.lower(), "PNG")
     dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_bytes(encode_image(out, out_alpha, fmt, quality, info))
+    dst.write_bytes(encode_image(out, out_alpha, fmt, quality, info, metadata))
     return out.shape[1], out.shape[0]

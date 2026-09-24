@@ -11,7 +11,7 @@ used when PyTorch isn't installed.
 from __future__ import annotations
 
 import threading
-from typing import Callable
+from collections.abc import Callable
 
 import cv2
 import numpy as np

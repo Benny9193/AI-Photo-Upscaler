@@ -8,7 +8,7 @@ A photo enhancer that runs entirely on your own computer. It upscales photos up 
 - **Old photo restoration**: finds scratches, creases and dust with Microsoft's *Bringing Old Photos Back to Life* detector and fills them in. DDColor colorizes black-and-white and sepia photos.
 - **Adjustments**: denoise, white balance, local contrast (CLAHE), saturation and sharpening, with presets.
 - **Two ways to use it**: a browser UI with a before/after slider, or a CLI that can batch-process whole folders.
-- **Keeps what matters**: transparency, EXIF orientation and ICC color profiles are preserved.
+- **Keeps what matters**: photo info (EXIF/XMP: date taken, camera, lens, GPS, ratings), transparency and ICC color profiles carry over to the output, so photo libraries still sort and map enhanced copies. Location can be removed.
 - **Works without PyTorch**: a classic Lanczos upscaler is used when PyTorch isn't installed.
 
 ## Install
@@ -50,6 +50,9 @@ photo-enhancer enhance grandma.jpg -s 2 --scratch-removal 0.5 --face-restore 0.6
 
 # Colorize a black-and-white photo
 photo-enhancer enhance wedding-1952.jpg --colorize 1
+
+# Share-safe copies: keep date and camera, drop GPS location
+photo-enhancer enhance ./trip -o ./trip-share --metadata no-gps
 
 # Same size, just cleaner (runs the AI model, then scales back down)
 photo-enhancer enhance noisy.png -s 1
@@ -97,6 +100,23 @@ Both download automatically the first time you use `--face-restore` (or the **Fa
 
 Weights are downloaded from the official [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN/releases) and [GFPGAN](https://github.com/TencentARC/GFPGAN/releases) releases, [OpenCV Zoo](https://github.com/opencv/opencv_zoo), Microsoft's Bringing Old Photos Back to Life release and Hugging Face (DDColor). Each file is checked against a pinned SHA-256 (DDColor: exact size) and cached in `~/.cache/photo-enhancer/models`. Set `PHOTO_ENHANCER_MODELS` to use a different directory.
 
+## Photo info (metadata)
+
+EXIF and XMP are copied from each input to its output (JPEG, PNG and WebP).
+
+- **Kept:** date taken, camera and lens, exposure settings, GPS, and XMP ratings and keywords.
+- **Fixed:**
+  - rotation is applied to the pixels and the tag removed, so viewers don't rotate the photo twice;
+  - the recorded pixel dimensions are updated;
+  - `Software` is set to `photo-enhancer`.
+- **Dropped:** the embedded EXIF thumbnail, which shows the old image.
+- **Your choice:** `--metadata` (or **Photo info** in the web UI) picks what to keep.
+  - `keep` (default): everything.
+  - `no-gps`: removes location from EXIF and XMP. If an XMP location field is in a form it doesn't recognise, the whole XMP block is dropped rather than risk leaking it.
+  - `strip`: writes no EXIF or XMP.
+
+  The ICC color profile is kept in every mode.
+
 ## How it works
 
 1. Decode the image and apply its EXIF rotation. Any alpha channel is split off.
@@ -105,13 +125,20 @@ Weights are downloaded from the official [Real-ESRGAN](https://github.com/xinnta
 4. Run the super-resolution network tile by tile. Each tile gets extra surrounding context, and only its center is kept.
 5. Resize to the exact requested scale.
 6. If face restoration is on: faces are found on the original image, which is faster. Each face is then warped from the upscaled image onto the 512×512 template GFPGAN was trained on, restored, and blended back with a feathered mask.
-7. Apply contrast, saturation and sharpening, then re-attach the alpha channel and encode with the original ICC profile.
+7. Apply contrast, saturation and sharpening, then re-attach the alpha channel and encode with the original ICC profile and photo info.
 
 ## Development
 
 ```bash
 pip install -e ".[dev]"
+ruff check .
 pytest
 ```
 
-Tests that need real weights are skipped unless those weights are already cached (`photo-enhancer download general-x4 faces scratch-detector`). DDColor is tested with a randomly initialised model, so no download is needed..
+GitHub Actions runs the same checks on every pull request and on pushes to `main`:
+
+- **Lint:** ruff.
+- **Tests:** Python 3.10 and 3.12 with CPU PyTorch. The small upscaler and face-detector weights are downloaded and cached.
+- **Without PyTorch:** a job with PyTorch absent, which checks that the classic fallback still works.
+
+Tests that need real weights are skipped unless those weights are already cached (`photo-enhancer download general-x4 faces scratch-detector`). DDColor is tested with a randomly initialised model, so no download is needed.
