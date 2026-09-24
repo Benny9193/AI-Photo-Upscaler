@@ -154,6 +154,13 @@
         <option value="webp">WebP</option>
       </select>
     </label>
+    <label class="field">Photo info
+      <select name="metadata">
+        <option value="keep">Keep all (date, camera, location)</option>
+        <option value="no-gps">Keep all but location</option>
+        <option value="strip">Remove all</option>
+      </select>
+    </label>
 
     <button class="primary" id="go" type="submit" disabled>Enhance</button>
     <div class="bar"><div id="bar"></div></div>

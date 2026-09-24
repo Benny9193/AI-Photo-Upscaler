@@ -58,7 +58,7 @@ class Job:
         }
 
 
-def _run_job(job: Job, data: bytes, opts: EnhanceOptions, fmt: str) -> None:
+def _run_job(job: Job, data: bytes, opts: EnhanceOptions, fmt: str, metadata: str = "keep") -> None:
     start = time.perf_counter()
     job.status = "running"
     try:
@@ -94,7 +94,7 @@ def _run_job(job: Job, data: bytes, opts: EnhanceOptions, fmt: str) -> None:
 
         out, out_alpha = enhance_array(rgb, opts, alpha=alpha, progress=prog)
         job.stage = "Encoding"
-        job.result = encode_image(out, out_alpha, fmt, 95, info)
+        job.result = encode_image(out, out_alpha, fmt, 95, info, metadata)
         job.media_type = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp"}[fmt]
         job.height, job.width = out.shape[:2]
         job.progress = 1.0
@@ -167,6 +167,7 @@ async def create_job(
     colorize: float = Form(0.0),
     colorize_model: str = Form(models.DEFAULT_COLORIZE_MODEL),
     format: str = Form("png"),
+    metadata: str = Form("keep"),
 ) -> dict:
     opts = EnhanceOptions(
         model=model,
@@ -188,6 +189,8 @@ async def create_job(
     fmt = {"png": "PNG", "jpg": "JPEG", "jpeg": "JPEG", "webp": "WEBP"}.get(format.lower())
     if fmt is None:
         raise HTTPException(400, "format must be png, jpg or webp")
+    if metadata not in ("keep", "no-gps", "strip"):
+        raise HTTPException(400, "metadata must be keep, no-gps or strip")
 
     data = await file.read()
     if not data:
@@ -197,7 +200,7 @@ async def create_job(
         _jobs[job.id] = job
         while len(_jobs) > MAX_JOBS:
             _jobs.popitem(last=False)
-    _executor.submit(_run_job, job, data, opts, fmt)
+    _executor.submit(_run_job, job, data, opts, fmt, metadata)
     return job.public()
 
 

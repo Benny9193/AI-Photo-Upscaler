@@ -91,7 +91,9 @@ def cmd_enhance(args: argparse.Namespace) -> int:
             print(f"skip {src} -> {dst} (exists; use --overwrite)", file=sys.stderr)
             continue
         start = time.perf_counter()
-        w, h = enhance_file(src, dst, opts, quality=args.quality, progress=_bar(src.name))
+        w, h = enhance_file(
+            src, dst, opts, quality=args.quality, progress=_bar(src.name), metadata=args.metadata
+        )
         print(f"{src} -> {dst} ({w}x{h}, {time.perf_counter() - start:.1f}s)")
     return 0
 
@@ -210,6 +212,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     e.add_argument("--format", choices=["png", "jpg", "webp"], help="output format")
     e.add_argument("--quality", type=int, default=95, help="JPEG/WebP quality (default: 95)")
+    e.add_argument(
+        "--metadata",
+        choices=["keep", "no-gps", "strip"],
+        default="keep",
+        help="photo info (EXIF/XMP: date taken, camera, location) to copy to the output: "
+        "keep all (default), everything but location, or none",
+    )
     e.add_argument("--tile", type=int, default=256, help="tile size; lower uses less memory, 0 disables")
     e.add_argument("--device", default="auto", help="auto, cpu, cuda, cuda:1, mps")
     e.add_argument("--overwrite", action="store_true", help="replace existing outputs")
