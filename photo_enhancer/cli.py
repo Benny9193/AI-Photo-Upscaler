@@ -129,7 +129,7 @@ def cmd_download(args: argparse.Namespace) -> int:
         infos = [models.get_model_info(key) for key in keys]
     except ValueError as e:
         raise SystemExit(f"error: {e}") from None
-    for key, info in zip(keys, infos):
+    for key, info in zip(keys, infos, strict=True):
         if models.is_downloaded(key):
             print(f"{key}: already downloaded")
             continue

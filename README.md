@@ -111,7 +111,14 @@ Weights are downloaded from the official [Real-ESRGAN](https://github.com/xinnta
 
 ```bash
 pip install -e ".[dev]"
+ruff check .
 pytest
 ```
+
+GitHub Actions runs the same checks on every pull request and on pushes to `main`:
+
+- **Lint:** ruff.
+- **Tests:** Python 3.10 and 3.12 with CPU PyTorch. The small upscaler and face-detector weights are downloaded and cached.
+- **Without PyTorch:** a job with PyTorch absent, which checks that the classic fallback still works.
 
 Tests that need real weights are skipped unless those weights are already cached (`photo-enhancer download general-x4 faces scratch-detector`). DDColor is tested with a randomly initialised model, so no download is needed.

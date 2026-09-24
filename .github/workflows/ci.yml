@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "ruff==0.16.8"
+      - run: ruff check .
+
+  test:
+    name: test (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      # CPU wheels first, so spandrel doesn't pull in the multi-GB CUDA build.
+      - run: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install -e ".[dev]"
+      # Small weights (5 MB upscaler, 0.2 MB face detector) so the real-model
+      # tests run. The large face, scratch and colorization models are skipped.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/photo-enhancer/models
+          key: models-${{ hashFiles('photo_enhancer/models.py') }}
+      - run: photo-enhancer download general-x4 yunet
+      - run: pytest -q
+
+  test-without-torch:
+    # The app must keep working (classic upscaler, web UI) without PyTorch.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: pip install -e ".[web]" pytest httpx
+      - run: python -c "import importlib.util as u; assert u.find_spec('torch') is None"
+      - run: pytest -q
+      - run: |
+          python - <<'PY'
+          from PIL import Image
+          Image.new("RGB", (32, 24), (120, 80, 40)).save("in.png")
+          PY
+          photo-enhancer enhance in.png -o out.png -s 2 2>&1 | tee log.txt
+          grep -q "classic" log.txt
+          python -c "from PIL import Image; assert Image.open('out.png').size == (64, 48)"

@@ -111,7 +111,7 @@ def build_unet():
         def forward(self, x):
             x = self.first(x)
             skips = []
-            for down, block in zip(self.down_sample, self.down_path):
+            for down, block in zip(self.down_sample, self.down_path, strict=True):
                 skips.append(x)
                 x = block(down(x))
             for i, up in enumerate(self.up_path):
