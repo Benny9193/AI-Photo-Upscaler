@@ -58,6 +58,7 @@ def cmd_enhance(args: argparse.Namespace) -> int:
         contrast=args.contrast,
         saturation=args.saturation,
         sharpen=args.sharpen,
+        face_restore=args.face_restore,
         tile=args.tile,
         device=args.device,
     )
@@ -66,6 +67,8 @@ def cmd_enhance(args: argparse.Namespace) -> int:
     except ValueError as e:
         raise SystemExit(f"error: {e}") from None
 
+    if opts.face_restore > 0 and not torch_available():
+        raise SystemExit("error: face restoration needs PyTorch: pip install 'photo-enhancer[ai]'")
     if resolve_model(opts.model) != opts.model:
         print(
             "warning: PyTorch not installed; using the classic (non-AI) upscaler.\n"
@@ -96,11 +99,20 @@ def cmd_models(args: argparse.Namespace) -> int:
         default = " (default)" if m.key == models.DEFAULT_MODEL else ""
         print(f"  {m.key:<15} {m.name}{default} [{mark}]\n  {'':<15} {m.description}")
     print(f"  {'classic':<15} Lanczos + sharpening, no AI (always available)")
+    print("\nFace restoration (--face-restore):")
+    for m in models.FACE_MODELS.values():
+        mark = "downloaded" if models.is_downloaded(m.key) else "not downloaded"
+        print(f"  {m.key:<15} {m.name} [{mark}]\n  {'':<15} {m.description}")
     return 0
 
 
 def cmd_download(args: argparse.Namespace) -> int:
-    keys = list(models.MODELS) if args.all else args.models or [models.DEFAULT_MODEL]
+    if args.all:
+        keys = list(models.get_all_models())
+    else:
+        keys = args.models or [models.DEFAULT_MODEL]
+        if "faces" in keys:
+            keys = [k for k in keys if k != "faces"] + list(models.FACE_MODELS)
     for key in keys:
         try:
             info = models.get_model_info(key)
@@ -154,6 +166,13 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--contrast", type=float, default=0.0, metavar="0-1")
     e.add_argument("--saturation", type=float, default=0.0, metavar="-1-1")
     e.add_argument("--sharpen", type=float, default=0.0, metavar="0-1")
+    e.add_argument(
+        "--face-restore",
+        type=float,
+        default=0.0,
+        metavar="0-1",
+        help="restore faces with GFPGAN; the value blends restored and original faces (try 0.7)",
+    )
     e.add_argument("--format", choices=["png", "jpg", "webp"], help="output format")
     e.add_argument("--quality", type=int, default=95, help="JPEG/WebP quality (default: 95)")
     e.add_argument("--tile", type=int, default=256, help="tile size; lower uses less memory, 0 disables")
@@ -165,7 +184,12 @@ def build_parser() -> argparse.ArgumentParser:
     m.set_defaults(func=cmd_models)
 
     d = sub.add_parser("download", help="pre-download model weights for offline use")
-    d.add_argument("models", nargs="*", metavar="MODEL", help=f"one of: {', '.join(models.MODELS)}")
+    d.add_argument(
+        "models",
+        nargs="*",
+        metavar="MODEL",
+        help=f"one of: {', '.join(models.get_all_models())}, or 'faces' for both face models",
+    )
     d.add_argument("--all", action="store_true", help="download every model")
     d.set_defaults(func=cmd_download)
 

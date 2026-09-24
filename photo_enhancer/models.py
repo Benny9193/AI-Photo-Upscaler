@@ -71,6 +71,30 @@ MODELS: dict[str, ModelInfo] = {
 
 DEFAULT_MODEL = "general-x4"
 
+# Face restoration: a detector that finds faces and their landmarks, and the
+# network that redraws each aligned face.
+FACE_MODELS: dict[str, ModelInfo] = {
+    m.key: m
+    for m in [
+        ModelInfo(
+            key="gfpgan",
+            name="GFPGAN v1.4",
+            scale=1,
+            url="https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.4.pth",
+            sha256="e2cd4703ab14f4d01fd1383a8a8b266f9a5833dacee8e6a79d3bf21a1b6be5ad",
+            description="Restores blurry, low-resolution or damaged faces.",
+        ),
+        ModelInfo(
+            key="yunet",
+            name="YuNet face detector",
+            scale=1,
+            url="https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
+            sha256="8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+            description="Finds faces and their landmarks for GFPGAN. Runs with OpenCV.",
+        ),
+    ]
+}
+
 
 def cache_dir() -> Path:
     """Where model weights live. Override with PHOTO_ENHANCER_MODELS."""
@@ -89,11 +113,15 @@ def is_downloaded(key: str) -> bool:
     return model_path(key).is_file()
 
 
+def get_all_models() -> dict[str, ModelInfo]:
+    return {**MODELS, **FACE_MODELS}
+
+
 def get_model_info(key: str) -> ModelInfo:
-    try:
-        return MODELS[key]
-    except KeyError:
-        raise ValueError(f"Unknown model {key!r}. Choose from: {', '.join(MODELS)}") from None
+    info = MODELS.get(key) or FACE_MODELS.get(key)
+    if info is None:
+        raise ValueError(f"Unknown model {key!r}. Choose from: {', '.join(get_all_models())}")
+    return info
 
 
 def _sha256(path: Path) -> str:
