@@ -114,4 +114,4 @@ pip install -e ".[dev]"
 pytest
 ```
 
-Tests that need real weights are skipped unless those weights are already cached (`photo-enhancer download general-x4 faces scratch-detector`). DDColor is tested with a randomly initialised model, so no download is needed..
+Tests that need real weights are skipped unless those weights are already cached (`photo-enhancer download general-x4 faces scratch-detector`). DDColor is tested with a randomly initialised model, so no download is needed.
