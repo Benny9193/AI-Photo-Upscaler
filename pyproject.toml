@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "photo-enhancer"
+version = "0.1.0"
+description = "Local AI photo enhancer: upscale, denoise and restore photos offline"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "pillow>=10.0",
+    "opencv-python-headless>=4.8",
+]
+
+[project.optional-dependencies]
+ai = ["torch>=2.1", "spandrel>=0.4"]
+web = ["fastapi>=0.110", "uvicorn>=0.27", "python-multipart>=0.0.9"]
+all = ["photo-enhancer[ai,web]"]
+dev = ["photo-enhancer[all]", "pytest>=8", "httpx>=0.27"]
+
+[project.scripts]
+photo-enhancer = "photo_enhancer.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["photo_enhancer*"]
+
+[tool.setuptools.package-data]
+photo_enhancer = ["static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["ai: needs PyTorch and downloads model weights"]
